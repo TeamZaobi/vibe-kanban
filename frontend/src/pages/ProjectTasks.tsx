@@ -70,6 +70,8 @@ import {
 } from '@/components/ui/breadcrumb';
 import { AttemptHeaderActions } from '@/components/panels/AttemptHeaderActions';
 import { TaskPanelHeaderActions } from '@/components/panels/TaskPanelHeaderActions';
+import { BoardFilter } from '@/components/BoardFilter';
+import { isRedCardItem, countRedCards } from '@/lib/attention';
 
 import type { TaskWithAttemptStatus, TaskStatus } from 'shared/types';
 
@@ -118,12 +120,12 @@ function DiffsPanelContainer({
       gitOps={
         attempt && selectedTask
           ? {
-              task: selectedTask,
-              branchStatus: branchStatus ?? null,
-              branchStatusError,
-              isAttemptRunning,
-              selectedBranch: branchStatus?.[0]?.target_branch_name ?? null,
-            }
+            task: selectedTask,
+            branchStatus: branchStatus ?? null,
+            branchStatusError,
+            isAttemptRunning,
+            selectedBranch: branchStatus?.[0]?.target_branch_name ?? null,
+          }
           : undefined
       }
     />
@@ -146,6 +148,7 @@ export function ProjectTasks() {
   const [selectedSharedTaskId, setSelectedSharedTaskId] = useState<
     string | null
   >(null);
+  const [onlyRedCards, setOnlyRedCards] = useState(false);
   const { userId } = useAuth();
 
   const {
@@ -454,6 +457,28 @@ export function ProjectTasks() {
     showSharedTasks,
     userId,
   ]);
+
+  // Red card count for filter badge
+  const redCardCount = useMemo(() => countRedCards(tasks), [tasks]);
+
+  // Apply red card filter if enabled
+  const filteredKanbanColumns = useMemo(() => {
+    if (!onlyRedCards) return kanbanColumns;
+
+    const filtered: typeof kanbanColumns = {
+      todo: [],
+      inprogress: [],
+      inreview: [],
+      done: [],
+      cancelled: [],
+    };
+
+    for (const [status, items] of Object.entries(kanbanColumns)) {
+      filtered[status as keyof typeof filtered] = items.filter(isRedCardItem);
+    }
+
+    return filtered;
+  }, [onlyRedCards, kanbanColumns]);
 
   const visibleTasksByStatus = useMemo(() => {
     const map: Record<TaskStatus, Task[]> = {
@@ -854,17 +879,28 @@ export function ProjectTasks() {
         </Card>
       </div>
     ) : (
-      <div className="w-full h-full overflow-x-auto overflow-y-auto overscroll-x-contain">
-        <TaskKanbanBoard
-          columns={kanbanColumns}
-          onDragEnd={handleDragEnd}
-          onViewTaskDetails={handleViewTaskDetails}
-          onViewSharedTask={handleViewSharedTask}
-          selectedTaskId={selectedTask?.id}
-          selectedSharedTaskId={selectedSharedTaskId}
-          onCreateTask={handleCreateNewTask}
-          projectId={projectId!}
-        />
+      <div className="w-full h-full flex flex-col">
+        {/* Red card filter toolbar */}
+        <div className="shrink-0 px-4 py-2 border-b bg-background">
+          <BoardFilter
+            onlyRedCards={onlyRedCards}
+            onOnlyRedCardsChange={setOnlyRedCards}
+            redCardCount={redCardCount}
+          />
+        </div>
+        {/* Kanban board */}
+        <div className="flex-1 overflow-x-auto overflow-y-auto overscroll-x-contain">
+          <TaskKanbanBoard
+            columns={filteredKanbanColumns}
+            onDragEnd={handleDragEnd}
+            onViewTaskDetails={handleViewTaskDetails}
+            onViewSharedTask={handleViewSharedTask}
+            selectedTaskId={selectedTask?.id}
+            selectedSharedTaskId={selectedSharedTaskId}
+            onCreateTask={handleCreateNewTask}
+            projectId={projectId!}
+          />
+        </div>
       </div>
     );
 
