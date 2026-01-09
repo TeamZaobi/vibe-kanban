@@ -79,6 +79,34 @@ export function TaskCard({
     });
   }, [isOpen]);
 
+  // Determine card border style based on attention_state
+  const needsAttention = task.attention_state === 'needs_input';
+  const hasRisk = task.attention_state === 'risk';
+  const isSharedTask = sharedTask || task.shared_task_id;
+
+  // Build className for attention states
+  const getCardClassName = () => {
+    const classes: string[] = [];
+
+    // Shared task styling (existing)
+    if (isSharedTask) {
+      classes.push(
+        'relative overflow-hidden pl-5 before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] before:bg-card-foreground before:content-[""]'
+      );
+    }
+
+    // Attention state styling (new)
+    if (needsAttention) {
+      classes.push('ring-2 ring-red-500 ring-offset-1 ring-offset-background');
+    } else if (hasRisk) {
+      classes.push(
+        'ring-2 ring-orange-500 ring-offset-1 ring-offset-background'
+      );
+    }
+
+    return classes.length > 0 ? classes.join(' ') : undefined;
+  };
+
   return (
     <KanbanCard
       key={task.id}
@@ -90,11 +118,7 @@ export function TaskCard({
       isOpen={isOpen}
       forwardedRef={localRef}
       dragDisabled={(!!sharedTask || !!task.shared_task_id) && !isSignedIn}
-      className={
-        sharedTask || task.shared_task_id
-          ? 'relative overflow-hidden pl-5 before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] before:bg-card-foreground before:content-[""]'
-          : undefined
-      }
+      className={getCardClassName()}
     >
       <div className="flex flex-col gap-2">
         <TaskCardHeader
