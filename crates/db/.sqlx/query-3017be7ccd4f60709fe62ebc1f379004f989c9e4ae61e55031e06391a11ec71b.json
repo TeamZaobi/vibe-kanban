@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE tasks SET attention_state = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND attention_state != $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3017be7ccd4f60709fe62ebc1f379004f989c9e4ae61e55031e06391a11ec71b"
+}

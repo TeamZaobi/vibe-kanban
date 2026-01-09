@@ -515,8 +515,9 @@ ORDER BY t.created_at DESC"#,
         id: Uuid,
         attention_state: AttentionState,
     ) -> Result<(), sqlx::Error> {
+        // Only update if value differs to reduce DB write amplification during high-frequency updates
         sqlx::query!(
-            "UPDATE tasks SET attention_state = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+            "UPDATE tasks SET attention_state = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND attention_state != $2",
             id,
             attention_state
         )

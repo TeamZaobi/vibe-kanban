@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// KAP state.json schema
+/// Supports both `loop` (KAP v0.1 spec) and `loop_status` (legacy/compat)
 #[derive(Debug, Deserialize)]
 pub struct KapStateJson {
     #[serde(default)]
@@ -29,11 +30,15 @@ pub struct KapStateJson {
     pub attention_state: String,
     #[serde(default)]
     pub needs_input: bool,
+    /// KAP v0.1 spec: `loop` object
+    #[serde(default, rename = "loop")]
+    pub loop_state: Option<LoopStatus>,
+    /// Legacy/compat field
     #[serde(default)]
     pub loop_status: Option<LoopStatus>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct LoopStatus {
     #[serde(default)]
     pub status: String,
@@ -81,16 +86,16 @@ impl KapWatcher {
 
     /// Start the KAP watcher as a background task
     pub async fn start(self) -> Result<(), KapWatcherError> {
-        let (tx, mut rx) = mpsc::channel::<DebounceEventResult>(64);
+        // Use unbounded channel to avoid blocking notify callbacks during burst events
+        let (tx, mut rx) = mpsc::unbounded_channel::<DebounceEventResult>();
 
         // Create the debounced watcher
         let mut debouncer: Debouncer<RecommendedWatcher, RecommendedCache> = new_debouncer(
             self.debounce_duration,
             None,
             move |res: DebounceEventResult| {
-                let tx = tx.clone();
-                // Use blocking send since we're in a sync context
-                if let Err(e) = tx.blocking_send(res) {
+                // Non-blocking send - if channel is closed, just log and continue
+                if let Err(e) = tx.send(res) {
                     tracing::warn!("Failed to send watcher event: {}", e);
                 }
             },
@@ -141,44 +146,70 @@ impl KapWatcher {
         is_kap_state_file(path)
     }
 
-    /// Handle a state.json change event
+    /// Handle a state.json change event with retry on parse error
     async fn handle_state_change(&self, path: &Path) -> Result<(), KapWatcherError> {
-        // Read and parse the state file
-        let content = match tokio::fs::read_to_string(path).await {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // File was deleted, ignore
+        // Try to read and parse, with one retry on parse error
+        let state = match self.read_and_parse_state(path).await {
+            Ok(s) => s,
+            Err(ParseResult::NotFound) => {
                 tracing::debug!("KAP state file deleted: {:?}", path);
                 return Ok(());
             }
-            Err(e) => return Err(e.into()),
-        };
-
-        let state: KapStateJson = match serde_json::from_str(&content) {
-            Ok(s) => s,
-            Err(e) => {
-                // JSON parse failed, might be a partial write
-                // Log and skip, don't propagate error
-                tracing::debug!("Failed to parse KAP state.json at {:?}: {}", path, e);
-                return Ok(());
+            Err(ParseResult::ParseError(first_error)) => {
+                // Retry once after a short delay (might be partial write)
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                match self.read_and_parse_state(path).await {
+                    Ok(s) => s,
+                    Err(ParseResult::NotFound) => {
+                        tracing::debug!("KAP state file deleted during retry: {:?}", path);
+                        return Ok(());
+                    }
+                    Err(ParseResult::ParseError(_)) => {
+                        // Second parse failure - give up
+                        tracing::debug!(
+                            "Failed to parse KAP state.json at {:?} after retry: {}",
+                            path,
+                            first_error
+                        );
+                        return Ok(());
+                    }
+                    Err(ParseResult::IoError(e)) => return Err(e.into()),
+                }
             }
+            Err(ParseResult::IoError(e)) => return Err(e.into()),
         };
 
         // Derive attention_state from KAP state
         let attention_state = self.derive_attention_state(&state);
 
-        // Update the task in database
+        // Get effective loop status for logging
+        let effective_loop = state.loop_state.as_ref().or(state.loop_status.as_ref());
+
+        // Update the task in database (only if value differs - SQL handles this)
         tracing::info!(
-            "Updating task {} attention_state to {:?} (needs_input={}, loop_status={:?})",
+            "Updating task {} attention_state to {:?} (needs_input={}, loop.status={:?})",
             state.task_id,
             attention_state,
             state.needs_input,
-            state.loop_status.as_ref().map(|l| &l.status)
+            effective_loop.map(|l| &l.status)
         );
 
         Task::update_attention_state(&self.pool, state.task_id, attention_state).await?;
 
         Ok(())
+    }
+
+    /// Read and parse state.json file
+    async fn read_and_parse_state(&self, path: &Path) -> Result<KapStateJson, ParseResult> {
+        let content = match tokio::fs::read_to_string(path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ParseResult::NotFound);
+            }
+            Err(e) => return Err(ParseResult::IoError(e)),
+        };
+
+        serde_json::from_str(&content).map_err(|e| ParseResult::ParseError(e.to_string()))
     }
 
     /// Derive AttentionState from KAP state
@@ -187,14 +218,24 @@ impl KapWatcher {
     }
 }
 
+/// Internal parse result for retry logic
+enum ParseResult {
+    NotFound,
+    ParseError(String),
+    IoError(std::io::Error),
+}
+
 /// Derive AttentionState from KAP state (standalone function for testing)
+/// Priority: loop_state (KAP v0.1 spec) > loop_status (legacy)
 pub fn derive_attention_state_from_kap(state: &KapStateJson) -> AttentionState {
-    // Rule 1: needs_input=true OR loop.status="blocked" => NeedsInput
+    // Rule 1: needs_input=true => NeedsInput (highest priority)
     if state.needs_input {
         return AttentionState::NeedsInput;
     }
 
-    if let Some(ref loop_status) = state.loop_status {
+    // Rule 2: Check loop status (prefer loop_state over loop_status for compat)
+    let effective_loop = state.loop_state.as_ref().or(state.loop_status.as_ref());
+    if let Some(ref loop_status) = effective_loop {
         match loop_status.status.as_str() {
             "blocked" => return AttentionState::NeedsInput,
             "failed" => return AttentionState::Risk,
@@ -202,7 +243,7 @@ pub fn derive_attention_state_from_kap(state: &KapStateJson) -> AttentionState {
         }
     }
 
-    // Rule 2: Check attention_state field directly (agent might set it)
+    // Rule 3: Check attention_state field directly (agent might set it)
     match state.attention_state.as_str() {
         "needs_input" => AttentionState::NeedsInput,
         "risk" => AttentionState::Risk,
@@ -243,6 +284,7 @@ mod tests {
             attempt_id: Uuid::new_v4(),
             attention_state: "normal".to_string(),
             needs_input: true,
+            loop_state: None,
             loop_status: None,
         };
 
@@ -253,13 +295,36 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_attention_state_blocked() {
+    fn test_derive_attention_state_loop_blocked() {
+        // Test with KAP v0.1 spec `loop` field
         let state = KapStateJson {
             schema_version: "1.0".to_string(),
             task_id: Uuid::new_v4(),
             attempt_id: Uuid::new_v4(),
             attention_state: "normal".to_string(),
             needs_input: false,
+            loop_state: Some(LoopStatus {
+                status: "blocked".to_string(),
+            }),
+            loop_status: None,
+        };
+
+        assert_eq!(
+            derive_attention_state_from_kap(&state),
+            AttentionState::NeedsInput
+        );
+    }
+
+    #[test]
+    fn test_derive_attention_state_legacy_loop_status() {
+        // Test with legacy loop_status field (backwards compat)
+        let state = KapStateJson {
+            schema_version: "1.0".to_string(),
+            task_id: Uuid::new_v4(),
+            attempt_id: Uuid::new_v4(),
+            attention_state: "normal".to_string(),
+            needs_input: false,
+            loop_state: None,
             loop_status: Some(LoopStatus {
                 status: "blocked".to_string(),
             }),
@@ -272,6 +337,29 @@ mod tests {
     }
 
     #[test]
+    fn test_derive_attention_state_loop_priority() {
+        // loop_state takes priority over loop_status
+        let state = KapStateJson {
+            schema_version: "1.0".to_string(),
+            task_id: Uuid::new_v4(),
+            attempt_id: Uuid::new_v4(),
+            attention_state: "normal".to_string(),
+            needs_input: false,
+            loop_state: Some(LoopStatus {
+                status: "running".to_string(),
+            }),
+            loop_status: Some(LoopStatus {
+                status: "blocked".to_string(), // Should be ignored
+            }),
+        };
+
+        assert_eq!(
+            derive_attention_state_from_kap(&state),
+            AttentionState::Normal
+        );
+    }
+
+    #[test]
     fn test_derive_attention_state_failed() {
         let state = KapStateJson {
             schema_version: "1.0".to_string(),
@@ -279,9 +367,10 @@ mod tests {
             attempt_id: Uuid::new_v4(),
             attention_state: "normal".to_string(),
             needs_input: false,
-            loop_status: Some(LoopStatus {
+            loop_state: Some(LoopStatus {
                 status: "failed".to_string(),
             }),
+            loop_status: None,
         };
 
         assert_eq!(
@@ -311,6 +400,7 @@ mod tests {
             attempt_id: Uuid::new_v4(),
             attention_state: "waiting_external".to_string(),
             needs_input: false,
+            loop_state: None,
             loop_status: None,
         };
 
@@ -320,4 +410,3 @@ mod tests {
         );
     }
 }
-
