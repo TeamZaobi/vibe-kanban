@@ -93,6 +93,37 @@ async fn main() -> Result<(), VibeKanbanError> {
         }
     });
 
+    // Start KAP watcher for attention_state auto-update
+    {
+        use services::services::worktree_manager::WorktreeManager;
+        use services::services::kap_watcher::KapWatcher;
+
+        let worktrees_root = WorktreeManager::get_worktree_base_dir();
+        let pool = deployment.db().pool.clone();
+
+        // Create worktrees directory if it doesn't exist
+        if !worktrees_root.exists() {
+            if let Err(e) = std::fs::create_dir_all(&worktrees_root) {
+                tracing::warn!("Failed to create worktrees directory: {}", e);
+            }
+        }
+
+        // Run watcher in a separate thread with its own runtime to avoid Send issues
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build KAP watcher runtime");
+
+            rt.block_on(async move {
+                let watcher = KapWatcher::new(pool, worktrees_root);
+                if let Err(e) = watcher.start().await {
+                    tracing::error!("KapWatcher exited: {:#}", e);
+                }
+            });
+        });
+    }
+
     let app_router = routes::router(deployment.clone());
 
     let port = std::env::var("BACKEND_PORT")
