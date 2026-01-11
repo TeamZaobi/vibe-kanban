@@ -212,6 +212,8 @@ cargo test --workspace    # 验证测试
 
 - [Vibe Kanban](https://github.com/BloopAI/vibe-kanban) - 基础看板系统
 - [plan-with-files](https://github.com/kodu-ai/plan-with-files) - 文件作为外部记忆
+- [Ralph Wiggum Loop](https://www.geoffreylitt.com/2025/04/08/how-i-vibe-code) - "Keep trying until it works" 策略，启发 Loop Runner 设计
+- [InfiAgents](https://github.com/TeamZaobi/infiagents) - 多 Agent 协作架构，启发 MCP 扩展设计
 - [Claude Code](https://claude.ai/code) - Agentic Loop 概念
 
 ---
