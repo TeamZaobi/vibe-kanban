@@ -48,6 +48,7 @@ use services::services::{
     container::{ContainerError, ContainerRef, ContainerService},
     diff_stream::{self, DiffStreamHandle},
     git::{GitCli, GitService},
+    kap_initializer::KapInitializer,
     image::ImageService,
     notification::NotificationService,
     queued_message::QueuedMessageService,
@@ -949,6 +950,23 @@ impl ContainerService for LocalContainerService {
             &workspace.branch,
         )
         .await?;
+
+        // Initialize KAP directory with planning files (idempotent, non-fatal)
+        for worktree in &created_workspace.worktrees {
+            if let Err(e) = KapInitializer::initialize(
+                &worktree.worktree_path,
+                task.id,
+                workspace.id,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "KAP initialization failed for worktree '{}': {}",
+                    worktree.repo_name,
+                    e
+                );
+            }
+        }
 
         // Copy project files and images to workspace
         self.copy_files_and_images(&created_workspace.workspace_dir, workspace)

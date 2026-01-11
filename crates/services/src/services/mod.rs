@@ -10,6 +10,7 @@ pub mod file_search_cache;
 pub mod filesystem;
 pub mod filesystem_watcher;
 pub mod kap_watcher;
+pub mod kap_initializer;
 pub mod git;
 pub mod github;
 pub mod image;
