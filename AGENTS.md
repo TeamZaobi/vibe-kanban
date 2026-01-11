@@ -11,6 +11,12 @@
 - `scripts/`: Dev helpers (ports, DB preparation).
 - `docs/`: Documentation files.
 
+### KAP (Kanban Agent Protocol) Modules
+- `crates/services/src/services/kap_watcher.rs`: File watcher for `.kanban_agent/state.json` → DB attention_state
+- `crates/services/src/services/kap_initializer.rs`: Idempotent generation of planning files
+- `frontend/src/lib/attention.ts`: Red card utilities (isRedCard, countRedCards)
+- `frontend/src/components/BoardFilter.tsx`: "Only red cards" filter toggle
+
 ## Managing Shared Types Between Rust and TypeScript
 
 ts-rs allows you to derive TypeScript types from Rust structs/enums. By annotating your Rust types with #[derive(TS)] and related macros, ts-rs will generate .ts declaration files for those types.
