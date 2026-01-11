@@ -74,9 +74,60 @@ Agent 写入 state.json → KAP Watcher → DB attention_state → 前端红卡 
 
 这让 Agent 能够 **主动向人类请求关注**，而不是等待人类轮询。
 
-#### 4. Loop State Machine（规划中）
+#### 4. Ralph Wiggum Loop（迭代执行策略）
 
-借鉴 Claude Code 的 "agentic loop" 概念，规划中的功能：
+受 [Geoffrey Litt 的 "How I Vibe Code"](https://www.geoffreylitt.com/2025/04/08/how-i-vibe-code) 启发：
+
+> **"Keep trying until it works"**  
+> Agent 不需要一次完美执行，而是通过多轮迭代逼近目标
+
+**核心洞察**：
+- 当前 LLM Agent 单次成功率有限（~60-80%）
+- 但如果允许重试和自我修正，整体成功率会大幅提升
+- 关键是设置合理的 **退出条件**：`max_iterations` 或 `completion_promise`
+
+**我们的实现（MVP-3 规划中）**：
+```
+Loop Runner:
+  while (not completed and iteration < max):
+    execute_step()
+    if needs_human_input:
+      pause_and_notify()  # 触发红卡
+    check_completion_promise()
+```
+
+这解释了为什么我们需要 **Loop State Machine** 和 **attention_state** 的联动：当 Agent 在迭代中卡住时，能够主动暂停并请求人类帮助。
+
+#### 5. InfiAgents（多 Agent 协作）
+
+受 [InfiAgents V3](https://github.com/TeamZaobi/infiagents) 启发：
+
+> **Agent 间通过共享文件协议通信**  
+> 不依赖中心化的 Agent 编排器，而是通过文件系统实现松耦合协作
+
+**核心洞察**：
+- 多 Agent 系统的瓶颈通常在于 **编排复杂度**
+- 如果不同 Agent 能读写同一套约定文件，就可以实现"无需编排的协作"
+- 每个 Agent 只需要知道协议规范，不需要知道其他 Agent 的存在
+
+**我们的实现（MVP-4 规划中）**：
+- `.kanban_agent/` 目录成为 **Agent 协作的接口契约**
+- MCP 工具暴露读写能力：`read_task_plan()`, `set_attention_state()`
+- 任何支持 MCP 的 Agent 都可以参与任务：
+  - Agent A 写入问题 → 人类回答 → Agent B 读取答案继续执行
+
+这就是为什么我们把三文件设计成 **稳定的外部接口**，而不是内部实现细节。
+
+#### 6. Loop State Machine
+
+综合以上思想，我们设计了 Loop 状态机：
+
+```
+idle → running ⇄ paused → stopped/completed/failed
+           ↑         ↓
+     answer_provided / needs_input
+```
+
 - Agent 可以暂停自己（`loop.status = "blocked"`）
 - 人类解除阻塞后自动恢复
 - 支持 `max_iterations` 限制防止无限循环
